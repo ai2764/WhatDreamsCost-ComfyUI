@@ -1,3 +1,25 @@
+# 🍴 Fork Notes (ai2764)
+
+This is a fork of [WhatDreamsCost/WhatDreamsCost-ComfyUI](https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI) that adds **global reference image** support to LTX Director via a dedicated multi-input loader.
+
+**Changes vs upstream:**
+
+- **New node `Multi Reference Image Loader`** — combine up to 4 `IMAGE` inputs into a single padded batch. Each input is center-padded with black to a shared canvas (width/height widget, or the max input dims when set to 0), snapped to `multiple_of`. Output `reference_batch` plugs straight into the new LTX Director IMAGE input.
+- **`LTX Director`** — new optional input `global_reference_image_batch` (IMAGE). When connected, every frame in the batch is treated as a global reference at `global_reference_strength` and prepended to the timeline guide list. The existing path-based `global_reference_images` (STRING) input is preserved for backward compatibility.
+- **`LTX Director Guide`** — forward-compatible import of `_append_guide_attention_entry` so the node still loads on older ComfyUI builds that don't expose it.
+
+**Install (replaces upstream):**
+
+```bash
+cd ComfyUI/custom_nodes
+# remove or back up the original if installed
+rm -rf WhatDreamsCost-ComfyUI
+git clone https://github.com/ai2764/WhatDreamsCost-ComfyUI.git
+# restart ComfyUI
+```
+
+---
+
 # Overview
 
 This will be a collection of free resources for ComfyUI.
@@ -149,6 +171,16 @@ Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyU
 
 **Tutorial videos and documentation coming soon**
 
+
+## Multi Reference Image Loader *(fork addition)*
+
+A lightweight companion loader for the LTX Director's new `global_reference_image_batch` input. Takes up to four optional `IMAGE` inputs and merges them into one batched `IMAGE` tensor.
+
+- `width` / `height` — target canvas (set both to 0 to auto-size to the largest input)
+- `multiple_of` — final dimensions are snapped to this (32 by default for LTX)
+- `interpolation` — `lanczos` / `bilinear` / `bicubic` / `nearest`
+
+Each input is scaled down (preserving aspect ratio) to fit inside the canvas, then center-padded with black so all references share the same `(H, W)` and can be stacked into a single batch. Strength is applied uniformly via `LTX Director.global_reference_strength`.
 
 ## Multi Image Loader
 <img width="1280" height="720" alt="Multi_Image_Loader_Wide_Gif" src="https://github.com/user-attachments/assets/99b6afd8-5197-4e6c-81da-a7bd156c42c7" />
