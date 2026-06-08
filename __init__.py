@@ -1,5 +1,6 @@
 from .ltx_keyframer import LTXKeyframer
 from .multi_image_loader import MultiImageLoader
+from .multi_reference_image_loader import MultiReferenceImageLoader
 from .ltx_sequencer import LTXSequencer
 from .speech_length_calculator import SpeechLengthCalculator
 from .load_audio_ui import LoadAudioUI
@@ -23,6 +24,7 @@ async def comfy_entrypoint() -> PromptRelay:
 NODE_CLASS_MAPPINGS = {
     "LTXKeyframer": LTXKeyframer,
     "MultiImageLoader": MultiImageLoader,
+    "MultiReferenceImageLoader": MultiReferenceImageLoader,
     "LTXSequencer": LTXSequencer,
     "SpeechLengthCalculator": SpeechLengthCalculator,
     "LoadAudioUI": LoadAudioUI,
@@ -34,6 +36,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LTXKeyframer": "LTX Keyframer",
     "MultiImageLoader": "Multi Image Loader",
+    "MultiReferenceImageLoader": "Multi Reference Image Loader",
     "LTXSequencer": "LTX Sequencer",
     "SpeechLengthCalculator": "Speech Length Calculator",
     "LoadAudioUI": "Load Audio UI",

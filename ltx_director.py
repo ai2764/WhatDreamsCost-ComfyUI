@@ -3,6 +3,7 @@ import json
 import base64
 import io as _io
 import math
+from typing import Any
 
 import numpy as np
 import torch
@@ -31,9 +32,78 @@ log = logging.getLogger(__name__)
 GuideData = io.Custom("GUIDE_DATA")
 
 
+def _coerce_reference_items(raw: Any) -> list[Any]:
+    """Normalize raw reference payload to a flat list of entries."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        items: list[Any] = []
+        for item in raw:
+            items.extend(_coerce_reference_items(item))
+        return items
+    if isinstance(raw, dict):
+        if "imageFile" in raw or "imageB64" in raw:
+            return [raw]
+        paths: list[Any] = []
+        for key in ("global", "character", "scene", "prop", "style"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            paths.extend(_coerce_reference_items(value))
+        return paths
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        if text.startswith(("[", "{")):
+            try:
+                return _coerce_reference_items(json.loads(text))
+            except Exception:
+                return [{"imageFile": text}]
+        return [{"imageFile": text}]
+    return [{"imageFile": str(raw).strip()}] if str(raw).strip() else []
+
+
+def _parse_global_reference_segments(
+    raw_references: Any,
+    default_strength: float,
+) -> tuple[list[dict[str, Any]], list[float], int]:
+    normalized = _coerce_reference_items(raw_references)
+    refs = []
+    for item in normalized:
+        if isinstance(item, dict):
+            if item.get("imageFile") or item.get("imageB64"):
+                refs.append(item)
+                continue
+            for key in ("imageFile", "imageB64"):
+                value = item.get(key)
+                if value:
+                    refs.append({key: str(value)})
+                    break
+        else:
+            text = str(item).strip()
+            if text:
+                refs.append({"imageFile": text})
+    segments = []
+    for index, item in enumerate(refs):
+        segment = dict(item)
+        segment["type"] = "image"
+        segment["start"] = 0
+        segment["label"] = segment.get("label", f"global_reference_{index + 1}")
+        segment.setdefault("strength", float(default_strength))
+        segments.append(segment)
+    strengths = [float(default_strength)] * len(segments)
+    return segments, strengths, len(segments)
+
+
 def _load_image_tensor(seg: dict) -> torch.Tensor:
     """Decode an image from the ComfyUI input folder (if imageFile provided) or fallback to base64
     to a ComfyUI-style image tensor of shape [1, H, W, 3], float32 in [0, 1]."""
+    tensor = seg.get("tensor")
+    if torch.is_tensor(tensor):
+        if tensor.ndim == 3:
+            tensor = tensor.unsqueeze(0)
+        return tensor.to(dtype=torch.float32)
     if seg.get("imageFile"):
         file_path = os.path.join(folder_paths.get_input_directory(), seg["imageFile"])
         if os.path.exists(file_path):
@@ -433,6 +503,18 @@ class LTXDirector(io.ComfyNode):
                     "guide_strength", default="",
                     tooltip="Auto-populated from the timeline editor (comma-separated guide strengths for image segments).",
                 ),
+                io.String.Input(
+                    "global_reference_images", default="", multiline=True, optional=True,
+                    tooltip="Optional list of global reference image paths (JSON array/string list/path).",
+                ),
+                io.Image.Input(
+                    "global_reference_image_batch", optional=True,
+                    tooltip="Optional IMAGE batch of global reference images. Takes precedence over the path-based input.",
+                ),
+                io.Float.Input(
+                    "global_reference_strength", default=0.35, min=0.0, max=1.0, step=0.01, optional=True,
+                    tooltip="Strength applied to each global reference image.",
+                ),
                 io.Int.Input(
                     "custom_width", default=0, min=0, max=8192, step=1, optional=True,
                     tooltip="Target output width for all image segments. Set to 0 to use the original image width.",
@@ -474,12 +556,31 @@ class LTXDirector(io.ComfyNode):
                 frame_rate=24, display_mode="seconds",
                 custom_width=768, custom_height=512, resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
-                use_custom_audio=False) -> io.NodeOutput:
+                use_custom_audio=False, global_reference_images="", global_reference_strength=0.35,
+                global_reference_image_batch=None) -> io.NodeOutput:
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
         derived_w, derived_h = custom_width, custom_height
         try:
+            global_reference_segments, global_reference_strengths, _ = _parse_global_reference_segments(
+                global_reference_images,
+                global_reference_strength,
+            )
+            if torch.is_tensor(global_reference_image_batch):
+                batch = global_reference_image_batch
+                if batch.ndim == 3:
+                    batch = batch.unsqueeze(0)
+                for i in range(batch.shape[0]):
+                    global_reference_segments.append({
+                        "type": "image",
+                        "tensor": batch[i:i + 1],
+                        "start": 0,
+                        "label": f"global_reference_batch_{i + 1}",
+                        "strength": float(global_reference_strength),
+                    })
+                    global_reference_strengths.append(float(global_reference_strength))
+            _global_count = len(global_reference_segments)
             tdata = json.loads(timeline_data) if timeline_data else {}
             img_segs = [
                 s for s in tdata.get("segments", [])
@@ -488,12 +589,13 @@ class LTXDirector(io.ComfyNode):
                 and int(s.get("start", 0)) < duration_frames  # exclude segments fully outside duration
             ]
             img_segs.sort(key=lambda s: s["start"])
+            all_segments = global_reference_segments + img_segs
 
             strengths = []
             if guide_strength.strip():
                 strengths = [float(x.strip()) for x in guide_strength.split(",") if x.strip()]
 
-            for idx, seg in enumerate(img_segs):
+            for idx, seg in enumerate(all_segments):
                 tensor = _load_image_tensor(seg)
 
                 # Apply resize
@@ -529,7 +631,11 @@ class LTXDirector(io.ComfyNode):
                     derived_h = tensor.shape[1]
                     derived_w = tensor.shape[2]
 
-                strength = strengths[idx] if idx < len(strengths) else 1.0
+                if idx < _global_count:
+                    strength = global_reference_strengths[idx]
+                else:
+                    timeline_idx = idx - _global_count
+                    strength = strengths[timeline_idx] if timeline_idx < len(strengths) else 1.0
                 guide_data["images"].append(tensor)
                 guide_data["insert_frames"].append(int(seg["start"]))
                 guide_data["strengths"].append(float(strength))

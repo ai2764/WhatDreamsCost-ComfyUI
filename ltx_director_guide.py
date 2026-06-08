@@ -1,4 +1,8 @@
 from comfy_extras.nodes_lt import LTXVAddGuide
+try:
+    from comfy_extras.nodes_lt import _append_guide_attention_entry
+except ImportError:  # Backward compatibility for older ComfyUI versions.
+    _append_guide_attention_entry = None
 import torch
 import comfy.utils
 from comfy_api.latest import io
@@ -86,5 +90,16 @@ class LTXDirectorGuide(LTXVAddGuide):
             positive, negative, latent_image, noise_mask = cls.append_keyframe(
                 positive, negative, frame_idx, latent_image, noise_mask, t, strength, scale_factors,
             )
+
+            if _append_guide_attention_entry is not None:
+                pre_filter_count = t.shape[2] * t.shape[3] * t.shape[4]
+                guide_latent_shape = list(t.shape[2:])
+                positive, negative = _append_guide_attention_entry(
+                    positive,
+                    negative,
+                    pre_filter_count,
+                    guide_latent_shape,
+                    strength=strength,
+                )
 
         return io.NodeOutput(positive, negative, {"samples": latent_image, "noise_mask": noise_mask})
